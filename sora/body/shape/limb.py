@@ -13,10 +13,19 @@ class Limb:
 
     def __init__(self, *args, **kwargs):
         self._contour = geometry.LineString(*args, **kwargs)
+        self.shadow = geometry.Polygon(self._contour)
 
     @property
     def xy(self):
         return np.array(self._contour.xy)
+
+    @property
+    def shadow_area(self):
+        return self.shadow.area * u.km**2
+
+    @property
+    def shadow_equivalent_radius(self):
+        return np.sqrt(self.shadow_area/np.pi)
 
     def plot(self, center_f=0, center_g=0, scale=1, ax=None, **kwargs):
         """Plots the limb on the tangent plane
