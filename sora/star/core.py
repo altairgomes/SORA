@@ -319,7 +319,7 @@ class Star(MetaStar):
         catalogue = catalogue[0]
         if len(catalogue) > 1:
             if self._verbose:
-                print('{} stars were found within 1 arcsec from given coordinate.'.format(len(catalogue)))
+                print('{} stars were found within {} arcsec from given coordinate.'.format(len(catalogue), int(radius.value)))
                 print('The list below is sorted by distance. Please select the correct star')
             catalogue = choice_star(catalogue, self.coord, ['RA_ICRS', 'DE_ICRS', 'Gmag'], source='gaia')
         cat_data = catalog.parse_catalogue(catalogue)
