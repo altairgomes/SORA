@@ -95,6 +95,30 @@ class Shape3D(BaseShape):
         self._scale = float(value)
         self.get_limb.cache_clear()
 
+    @property
+    def volume(self):
+        v = self.vertices[self.faces.T]
+        ab = v[1] - v[0]
+        ac = v[2] - v[0]
+        normal = ab.cross(ac)
+        return normal.dot(v[0]).sum() / 6
+
+    @property
+    def volumetric_equivalent_radius(self):
+        return (3 * self.volume / (4 * np.pi)) ** (1. / 3.)
+
+    @property
+    def surface_area(self):
+        v = self.vertices[self.faces.T]
+        ab = v[1] - v[0]
+        ac = v[2] - v[0]
+        normal = ab.cross(ac)
+        return normal.norm().sum() / 2
+
+    @property
+    def surface_equivalent_radius(self):
+        return np.sqrt(self.surface_area / (4 * np.pi))
+
     def rotated_vertices(self, sub_observer="00 00 00 +00 00 00", pole_position_angle=0):
         """Returns the vertices rotated as viewed by a given observer,
         with 'x' in the direction of the observer.
