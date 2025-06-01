@@ -1,125 +1,155 @@
 import warnings
 
-__all__ = ['getBSPfromJPL', 'ephem_kernel', 'ephem_horizons']
+import requests
+import pathlib
+import base64
+import http
+import re
+from datetime import datetime as dt
 
+satellites_bsp = {
+    "PLUTO": "https://naif.jpl.nasa.gov/pub/naif/generic_kernels/spk/satellites/plu060.bsp",
+    "1930 BM": "https://naif.jpl.nasa.gov/pub/naif/generic_kernels/spk/satellites/plu060.bsp",
+}
 
-def getBSPfromJPL(identifier, initial_date, final_date, email, directory='./'):
-    """Downloads BSP files from JPL database.
-
-    BSP files, which have information to generate the ephemeris of the objects,
-    will be downloaded and named as (without spaces): '[identifier].bsp'.
-
-    Important
-    ---------
-    It is not possible to download BSP files for Planets or Satellites.
+def getBSPfromJPL(identifier, initial_date, final_date, email=None, directory='./'):
+    """
+    Retrieve SPK (Spacecraft and Planet Kernel) files from JPL Horizons API for given object identifiers.
 
     Parameters
     ----------
-    identifier : `str`, `list`
-        Identifier of the object(s).
-        It can be the `name`, `number` or `SPK ID`.
-        It can also be a list of objects.
+    identifier : str or list of str
+        A single object identifier or a list of identifiers: names, numbers, provisional designations, and SPK ID.
+        If an identifier is an SPKID it MUST start with the prefix 'SPK' (case-insensitive), and followed by numeric digits;
+        the function strips the 'SPK' prefix and any non-digit characters, using only the digits for the lookup.
+        Other identifiers are used as provided.
+    initial_date : str
+        Start date in 'YYYY-MM-DD' format. Must be at least 32 days before `final_date`.
+    final_date : str
+        End date in 'YYYY-MM-DD' format. Must be at least 32 days after `initial_date`.
+    email : str, optional
+        User email for JPL API (reserved for backward compatibility; not used).
+    directory : str, optional
+        Path to the directory where BSP files will be saved. Default is current directory.
 
-        Examples: ``'2137295'``, ``'1999 RB216'``, ``'137295'``,
-        ``['2137295', '136199', '1999 RC216', 'Chariklo']``.
+    Returns
+    -------
+    None
+        Writes BSP files to the specified directory.
 
-    initial_date : `str`
-        Date the bsp file is to begin, within span `1900-2100`.
-
-        Examples: ``'2003-02-01'``, ``'2003-3-5'``.
-
-    final_date : `str`
-        Date the bsp file is to end, within span [1900-2100].
-        Must be more than 32 days later than `initial_date`.
-
-        Examples: ``'2006-01-12'``, ``'2006-1-12'``.
-
-    email : `str`
-        User's e-mail contact address.
-        Required by JPL web service.
-
-        Example: ``username@user.domain.name``.
-
-    directory : `str`
-        Directory path to save the bsp files.
+    Raises
+    ------
+    ValueError
+        If date range is invalid, directory does not exist, or an SPK identifier is malformed (missing digits after 'SPK').
+    Exception
+        For HTTP errors, missing SPK generation, or file writing issues.
     """
-    warnings.warn("This function is no longer working due to changes in the JPL Query service. Alternatives are being considered.")
-    return
-    import pathlib
-    import shutil
-    import requests
-    from datetime import datetime
+    ids = [identifier] if isinstance(identifier, str) else list(identifier)
+    ids = [str(obj) for obj in ids]
 
-    date1 = datetime.strptime(initial_date, '%Y-%m-%d')
-    date2 = datetime.strptime(final_date, '%Y-%m-%d')
-    diff = date2 - date1
+    date1 = dt.strptime(initial_date, "%Y-%m-%d")
+    date2 = dt.strptime(final_date,  "%Y-%m-%d")
+    if (date2 - date1).days <= 32:
+        raise ValueError("final_date must be more than 32 days after initial_date")
 
-    if diff.days <= 32:
-        raise ValueError('The [final_date] must be more than 32 days later than [initial_date]')
-    else:
-        if isinstance(identifier, str):
-            identifier = [identifier]
+    path = pathlib.Path(directory)
+    if not path.exists():
+        raise ValueError(f"Directory {path} does not exist")
 
-        url_jpl = 'https://ssd.jpl.nasa.gov/x/smb_spk.cgi?OPTION=Make+SPK'
-        lim, opt, n = 10, 'y', len(identifier)
+    base_url = "https://ssd.jpl.nasa.gov/api/horizons.api"
+    success, failures = 0, []
+    max_len = max(len(obj) for obj in ids)
 
-        if n > lim:
-            parameters = {'OBJECT': identifier[0], 'START': date1.strftime('%Y-%b-%d'),
-                          'STOP': date2.strftime('%Y-%b-%d'), 'EMAIL': email, 'TYPE': '-B'}
+    def _fetch_data(params):
+        """
+        Fetch data from the JPL Horizons API with given parameters.
 
-            t0 = datetime.now()
-            r = requests.get(url_jpl, params=parameters, stream=True)
-            tf = datetime.now()
+        Parameters
+        ----------
+        params : dict
+            Dictionary of query parameters for the API request.
 
-            bsp_format = r.headers['Content-Type']
-            if r.status_code == requests.codes.ok and bsp_format == 'application/download':
-                size0 = int(r.headers["Content-Length"]) / 1024 / 1024  # MB
+        Returns
+        -------
+        requests.Response
+            The HTTP response object from the GET request.
 
-                print('Estimated time to download {} ({:.3f} MB) files: {}'.
-                      format(n, n * size0, n * (tf - t0)))
+        Raises
+        ------
+        Exception
+            If the HTTP status code is not 200 (OK).
+        """
+        r = requests.get(base_url, params=params, stream=True)
+        if r.status_code != 200:
+            raise Exception(f"HTTP {r.status_code} - {http.HTTPStatus(r.status_code).phrase}")
+        return r
 
-                opt = input('\nAre you sure? (y/n):')
+    for obj in ids:
+        # If identifier starts with 'SPK', extract only digits after it
+        spk = False
+        if obj.upper().startswith('SPK'):
+            digits = re.findall(r"\d+", obj)
+            if not digits:
+                raise ValueError(f"No digits found in SPK identifier '{obj}'")
+            obj = ''.join(digits)
+            fname   = f"SPKID{obj.replace(' ', '')}.bsp"
+            spk = True
+        else:
+            fname   = f"{obj.replace(' ', '')}.bsp"
+            
+        status = f"Retrieving {obj:{max_len}} …"
+        print(status, end="\r")
+
+        params = {
+            "format":     "json",
+            "EPHEM_TYPE": "SPK",
+            "OBJ_DATA":   "YES",
+            "COMMAND":    f"'DES={obj}'",
+            "START_TIME": date1.strftime("%Y-%b-%d"),
+            "STOP_TIME":  date2.strftime("%Y-%b-%d"),
+        }
+
+        try:
+            r = _fetch_data(params)
+            result = r.json().get("result", "")
+
+            if ("No matches found." in result or "Comet AND asteroid index search" in result) and not spk:
+                params["COMMAND"] = f"'{obj};'"
+                r = _fetch_data(params)
+                
+            data = r.json()
+            if "error" in data and "SPK creation is not available" in data["error"]:
+                url = satellites_bsp.get(obj.upper())
+                if not url:
+                    raise Exception("No fallback URL for satellite")
+                r = requests.get(url, stream=True)
+                r.raise_for_status()
+                content = r.content
+            elif "spk" in data:
+                content = base64.b64decode(data["spk"])
             else:
-                raise ValueError('It was not able to download the bsp file for object {}\n'.
-                                 format(identifier[0]))
+                raise Exception("SPK file not generated")
 
-        if opt in ['y', 'Y', 'YES', 'yes']:
-            if directory != './':
-                path = pathlib.Path(directory)
-                if not path.exists():
-                    raise ValueError('The directory {} does not exist!'.format(path))
-                directory += '/'
+            
+            outpath = path / fname
+            with open(outpath, "wb") as f:
+                f.write(content)
+            success += 1
 
-            print("\nDownloading bsp file(s) ...\n")
+        except Exception as e:
+            failures.append(f"{obj}: {e}")
 
-            m, size = 0, 0.0
-            failed = []
+        finally:
+            print(" " * (len(status) + 5), end="\r")
 
-            t0 = datetime.now()
-            for obj in identifier:
-                filename = obj.replace(' ', '') + '.bsp'
+    summary = f"Done — successes: {success}, failures: {len(failures)}"
+    print(summary.ljust(len(summary) + max_len))
+    if failures:
+        print("Failures detail:")
+        for line in failures:
+            print("  — ", line)
+        print("     Check if the identifier(s) is(are) correct.")
 
-                parameters = {'OBJECT': obj, 'START': date1.strftime('%Y-%b-%d'),
-                              'STOP': date2.strftime('%Y-%b-%d'), 'EMAIL': email, 'TYPE': '-B'}
-
-                r = requests.get(url_jpl, params=parameters, stream=True)
-                bsp_format = r.headers['Content-Type']
-                if r.status_code == requests.codes.ok and bsp_format == 'application/download':
-                    size += int(r.headers["Content-Length"]) / 1024 / 1024
-                    m += 1
-                    with open(directory + filename, 'wb') as f:
-                        r.raw.decode_content = True
-                        shutil.copyfileobj(r.raw, f)
-                else:
-                    failed.append(obj)
-            tf = datetime.now()
-
-            print("{} ({:.3f} MB) file(s) was/were downloaded".format(m, size))
-            print("Download time: {}".format(tf - t0))
-
-            if len(failed) > 0:
-                raise ValueError(
-                    'It was not able to download the bsp files for next objects: {}'.format(sorted(failed)))
 
 
 def ephem_kernel(time, target, observer, kernels, output='ephemeris'):

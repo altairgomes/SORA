@@ -284,22 +284,42 @@ class Star(MetaStar):
 
     def __searchgaia(self, catalog):
         """Searches for the star position in the Gaia catalogue and save information.
+        If coord is given, iterates up to 32 arcsec radius to find the star.
 
         Parameters
         ----------
         catalog : `VizierCatalogue`
             The catalogue to download data. It can be ``'gaiadr2'``, ``'gaiaedr3'`` or ``'gaiadr3'``.
         """
-        if hasattr(self, 'code'):
-            catalogue = catalog.search_star(code=self.code)
+        catalogue = None
+
+        if hasattr(self, 'code') and self.code:
+            try:
+                catalogue = catalog.search_star(code=self.code)
+            except Exception as e:
+                raise ValueError(f"Search by code failed: {e}")
+        elif hasattr(self, 'coord') and self.coord:
+            search_radii = [1, 2, 4, 8, 16, 32] * u.arcsec
+
+            for radius in search_radii:
+                try:
+                    catalogue = catalog.search_star(coord=self.coord, radius=radius)
+                    if catalogue and len(catalogue) > 0:
+                        break
+                    if radius < max(search_radii):
+                        print(f"Retrying search with a larger radius: {radius * 2}", end="\r")
+                except Exception as e:
+                    warnings.warn(f"Search failed at radius {radius}: {e}")
+                
+            if not catalogue or len(catalogue) == 0:
+                raise ValueError('No star was found. It does not exist or VizieR is out.')
         else:
-            catalogue = catalog.search_star(coord=self.coord, radius=1 * u.arcsec)
-        if len(catalogue) == 0:
-            raise ValueError('No star was found. It does not exist or VizieR is out.')
+            raise ValueError('No `code` or `coord` attribute provided on the object.')
+
         catalogue = catalogue[0]
         if len(catalogue) > 1:
             if self._verbose:
-                print('{} stars were found within 1 arcsec from given coordinate.'.format(len(catalogue)))
+                print('{} stars were found within {} arcsec from given coordinate.'.format(len(catalogue), int(radius.value)))
                 print('The list below is sorted by distance. Please select the correct star')
             catalogue = choice_star(catalogue, self.coord, ['RA_ICRS', 'DE_ICRS', 'Gmag'], source='gaia')
         cat_data = catalog.parse_catalogue(catalogue)
